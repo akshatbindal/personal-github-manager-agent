@@ -1,0 +1,5 @@
+google-adk
+python-telegram-bot
+google-cloud-firestore
+python-dotenv
+httpx
