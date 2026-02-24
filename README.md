@@ -15,7 +15,11 @@ Autonomous Personal GitHub Manager Agent built with Google ADK, GitHub MCP, and 
 ### 1. Google Cloud Setup
 - Create a GCP Project.
 - Enable APIs: Cloud Run, Firestore, Secret Manager, Cloud Build.
-- Create a Firestore database in Native mode.
+- **Create a Firestore database in Native mode**:
+  ```bash
+  # Replace [REGION] with your preferred region (e.g., us-central1)
+  gcloud firestore databases create --location=[REGION] --type=firestore-native
+  ```
 
 ### 2. Secrets Management (Recommended)
 You can store your sensitive tokens in Secret Manager:
