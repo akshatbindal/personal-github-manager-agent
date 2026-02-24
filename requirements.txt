@@ -1,5 +1,6 @@
 google-adk
 python-telegram-bot
 google-cloud-firestore
+google-cloud-secret-manager
 python-dotenv
 httpx
