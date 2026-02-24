@@ -4,12 +4,10 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 from .main import runner, run_agent
 from .config import TELEGRAM_BOT_TOKEN, APP_NAME
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logger = logging.getLogger(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Start command received from {update.effective_user.id}")
     await update.message.reply_text(
         "Hi! I'm your Personal GitHub Manager. Tell me what you'd like to do with your repos!"
     )
@@ -17,41 +15,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     text = update.message.text
+    logger.info(f"Message received from {chat_id}: {text}")
 
-    # Send a typing indicator
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+    try:
+        # Send a typing indicator
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
 
-    # Run the ADK agent
-    # For now, we use chat_id as session_id and user_id
-    events = await run_agent(user_id=chat_id, session_id="default_session", message=text)
-
-    for event in events:
-        if event.author == "personal_github_manager" and event.content:
-            # Join parts if it's a list (depends on Event structure)
-            # In ADK, event.content is often a Content object
-            response_text = ""
-            if hasattr(event.content, "parts"):
-                for part in event.content.parts:
-                    if part.text:
-                        response_text += part.text
-
-            if response_text:
-                await update.message.reply_text(response_text)
-
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    chat_id = str(update.effective_chat.id)
-    data = query.data
-
-    if data.startswith("approve_"):
-        session_id = data.replace("approve_", "")
-        # Send approval to ADK agent
-        # We can just run a new message "Approve plan for session {session_id}"
-        # Or call the tool directly if we had a more complex setup
-        await query.edit_message_text(text=f"Approving plan...")
-        events = await run_agent(user_id=chat_id, session_id="default_session", message=f"Approved plan for Jules session {session_id}")
+        # Run the ADK agent
+        events = await run_agent(user_id=chat_id, session_id="default_session", message=text)
 
         for event in events:
             if event.author == "personal_github_manager" and event.content:
@@ -60,13 +31,47 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for part in event.content.parts:
                         if part.text:
                             response_text += part.text
+
                 if response_text:
-                    await context.bot.send_message(chat_id=chat_id, text=response_text)
+                    logger.info(f"Sending response to {chat_id}: {response_text[:50]}...")
+                    await update.message.reply_text(response_text)
+    except Exception as e:
+        logger.error(f"Error handling message from {chat_id}: {e}")
+        await update.message.reply_text(f"Oops, something went wrong: {e}")
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = str(update.effective_chat.id)
+    logger.info(f"Callback received from {chat_id}: {query.data}")
+
+    await query.answer()
+
+    data = query.data
+
+    if data.startswith("approve_"):
+        session_id = data.replace("approve_", "")
+        try:
+            await query.edit_message_text(text=f"Approving plan...")
+            events = await run_agent(user_id=chat_id, session_id="default_session", message=f"Approved plan for Jules session {session_id}")
+
+            for event in events:
+                if event.author == "personal_github_manager" and event.content:
+                    response_text = ""
+                    if hasattr(event.content, "parts"):
+                        for part in event.content.parts:
+                            if part.text:
+                                response_text += part.text
+                    if response_text:
+                        await context.bot.send_message(chat_id=chat_id, text=response_text)
+        except Exception as e:
+            logger.error(f"Error handling callback from {chat_id}: {e}")
+            await context.bot.send_message(chat_id=chat_id, text=f"Failed to approve plan: {e}")
 
 if __name__ == '__main__':
     if not TELEGRAM_BOT_TOKEN:
-        print("TELEGRAM_BOT_TOKEN not set!")
+        logger.error("TELEGRAM_BOT_TOKEN not set! Bot cannot start.")
     else:
+        logger.info("Starting Telegram bot polling...")
         application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
         start_handler = CommandHandler('start', start)
