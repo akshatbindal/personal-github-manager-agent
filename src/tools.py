@@ -1,6 +1,6 @@
 from google.adk.agents.callback_context import CallbackContext
 
-def track_jules_session(context: CallbackContext, session_name: str, status: str):
+def track_jules_session(session_name: str, status: str, context=None):
     """
     Registers or updates an active Jules session in the ADK agent state.
     This allows the background polling service to track long-running sessions.
@@ -9,6 +9,9 @@ def track_jules_session(context: CallbackContext, session_name: str, status: str
         session_name: The resource name of the session (e.g. sessions/123456)
         status: The local tracking status (e.g. "polling", "awaiting_user", "completed")
     """
+    if not context:
+        return f"Warning: No ADK context injected. Could not track {session_name}."
+
     active_sessions = context.state.get("active_jules_sessions", {})
     
     # Migration handling from old array format to dict format
