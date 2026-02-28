@@ -1,87 +1,21 @@
-import asyncio
+import os
 import logging
-from google.adk.agents import Agent
-from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
-from google.adk.apps import App
+import asyncio
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from google.adk.runners import Runner
+from google.genai import types
 
-from .config import GITHUB_TOKEN, GITHUB_MCP_URL, JULES_MCP_URL, APP_NAME, GOOGLE_CLOUD_PROJECT, FIRESTORE_DATABASE
+from .agent import root_agent
+from .config import GOOGLE_CLOUD_PROJECT, FIRESTORE_DATABASE, APP_NAME, JULES_MCP_URL
 from .sessions import FirestoreSessionService
-from .tools import register_jules_session, update_jules_session_status
+from .telegram import send_telegram_message
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
-tools = [register_jules_session, update_jules_session_status]
-
-# GitHub MCP Toolset
-if GITHUB_TOKEN and GITHUB_MCP_URL:
-    try:
-        github_toolset = McpToolset(
-            connection_params=StreamableHTTPServerParams(
-                url=GITHUB_MCP_URL,
-                headers={
-                    "Authorization": f"Bearer {GITHUB_TOKEN}",
-                    "X-MCP-Toolsets": "repos,pull_requests,issues",
-                },
-            ),
-        )
-        tools.append(github_toolset)
-        logger.info("GitHub Toolset initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize GitHub Toolset: {e}")
-else:
-    logger.warning("GitHub Configuration missing, GitHub tools will not be available.")
-
-# Jules MCP Toolset
-if JULES_MCP_URL:
-    try:
-        jules_toolset = McpToolset(
-            connection_params=StreamableHTTPServerParams(
-                url=JULES_MCP_URL,
-            ),
-        )
-        tools.append(jules_toolset)
-        logger.info("Jules Toolset initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Jules Toolset: {e}")
-else:
-    logger.warning("Jules MCP URL missing, Jules tools will not be available.")
-
-# Root Agent
-root_agent = Agent(
-    model="gemini-2.0-flash",
-    name="personal_github_manager",
-    instruction="""You are a personal GitHub manager agent.
-    Your goal is to help the user manage their repositories and perform coding tasks using Jules.
-
-    Workflows:
-    1. If the user wants to create a new repository:
-       - Use 'repos.create_for_authenticated_user' to create the repo.
-       - Use appropriate tools to add a README and MIT license if possible.
-       - Inform the user once done.
-
-    2. If the user wants to perform a coding task:
-       - Identify the repository (e.g., owner/repo).
-       - Use Jules MCP 'list_sources' and 'get_source' to find the source.
-       - Create a Jules session using 'create_session' with:
-         - source: the source resource name (e.g., sources/github/owner/repo)
-         - instruction: the task
-         - require_plan_approval: True
-         - auto_pr: True
-       - Use 'register_jules_session' to store the session ID and repo name in your state.
-       - Inform the user that Jules is preparing a plan.
-
-    3. If the user approves a plan:
-       - Use Jules MCP 'approve_plan' with the session name.
-       - Update the status in state using 'update_jules_session_status' to 'implementing'.
-
-    4. If a task is completed:
-       - Use GitHub MCP 'pull_requests.merge' to merge the resulting PR.
-       - Inform the user.
-    """,
-    tools=tools,
-)
+# Initialize FastAPI app
+app = FastAPI(title="Personal GitHub Manager Agent")
 
 # Initialize Session Service
 if GOOGLE_CLOUD_PROJECT:
@@ -102,26 +36,143 @@ runner = Runner(
     session_service=session_service,
 )
 
-async def run_agent(user_id: str, session_id: str, message: str):
-    from google.genai import types
+async def run_agent_and_reply(user_id: str, session_id: str, message: str):
+    """Runs the agent with the given message and sends the response back to Telegram."""
     content = types.Content(role="user", parts=[types.Part(text=message)])
-
-    events = []
+    
+    response_text = ""
     try:
         async for event in runner.run_async(
             user_id=user_id,
             session_id=session_id,
             new_message=content
         ):
-            events.append(event)
+            if event.author == "personal_github_manager" and event.content:
+                if hasattr(event.content, "parts"):
+                    for part in event.content.parts:
+                        if part.text:
+                            response_text += part.text
+        
+        if response_text:
+           await send_telegram_message(chat_id=user_id, text=response_text)
     except Exception as e:
         logger.error(f"Error running agent: {e}")
-        # Return a synthetic event for the bot to display the error
-        from google.adk.events.event import Event
-        error_event = Event(
-            author="personal_github_manager",
-            content=types.Content(parts=[types.Part(text=f"I encountered an error: {e}")])
-        )
-        events.append(error_event)
+        await send_telegram_message(chat_id=user_id, text=f"I encountered an error: {e}")
 
-    return events
+@app.post("/telegram/webhook")
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Webhook endpoint for Telegram bot updates."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    # Handle standard messages
+    if "message" in data and "text" in data["message"]:
+        chat_id = str(data["message"]["chat"]["id"])
+        text = data["message"]["text"]
+        
+        # We process the agent call in the background to avoid Telegram webhook timeouts
+        background_tasks.add_task(run_agent_and_reply, user_id=chat_id, session_id="default_jules_session", message=text)
+        return {"status": "ok"}
+        
+    return {"status": "ignored"}
+
+
+# --- JULES POLLING LOGIC ---
+
+async def call_jules_tool(tool_name: str, arguments: dict):
+    """Calls a tool on the remote Jules MCP server via SSE/HTTP."""
+    if not JULES_MCP_URL:
+        return None
+        
+    async with httpx.AsyncClient() as client:
+        try:
+            async with client.stream("GET", JULES_MCP_URL, timeout=10.0) as response:
+                post_url = None
+                async for line in response.aiter_lines():
+                    if line.startswith("event: endpoint"):
+                        continue
+                    if line.startswith("data: "):
+                        post_url = line.replace("data: ", "").strip()
+                        if not post_url.startswith("http"):
+                            base_url = str(response.url).rsplit('/', 1)[0]
+                            post_url = f"{base_url}/{post_url.lstrip('/')}"
+                        break
+
+                if not post_url:
+                    logger.error("Could not find POST endpoint from SSE")
+                    return None
+
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments
+                    }
+                }
+                res = await client.post(post_url, json=payload, timeout=30.0)
+                return res.json().get("result", {}).get("content", [{}])[0].get("text")
+        except Exception as e:
+            logger.error(f"Error calling Jules MCP: {e}")
+            return None
+
+
+@app.get("/scheduler/poll-jules")
+async def poll_jules(background_tasks: BackgroundTasks):
+    """Endpoint triggered by Cloud Scheduler every 1 minute."""
+    try:
+        res = await session_service.list_sessions(app_name=APP_NAME)
+        # Note: res is a ListSessionsResponse with a .sessions list of Session configs
+    except Exception as e:
+        logger.error(f"Failed to list sessions: {e}")
+        return {"status": "error"}
+
+    for session_info in res.sessions:
+        try:
+            session = await session_service.get_session(
+                app_name=APP_NAME,
+                user_id=session_info.user_id,
+                session_id=session_info.id
+            )
+            
+            active_jules = session.state.get("active_jules_sessions", {})
+            if not isinstance(active_jules, dict):
+                continue
+
+            for jules_session_name, tracking_status in active_jules.items():
+                if tracking_status == "polling":
+                    background_tasks.add_task(
+                        check_jules_and_notify, 
+                        session.user_id, 
+                        session.id, 
+                        jules_session_name
+                    )
+        except Exception as e:
+            logger.error(f"Failed to process session {session_info.id}: {e}")
+
+    return {"status": "polling_jobs_queued"}
+
+async def check_jules_and_notify(user_id: str, session_id: str, jules_session_name: str):
+    """Checks the status from Jules and wakes up the LLM if intervention is needed."""
+    logger.info(f"Checking Jules session: {jules_session_name}")
+    result_text = await call_jules_tool("get_session", {"session_name": jules_session_name})
+    
+    if not result_text:
+        return
+        
+    system_prompt = None
+    
+    if "State: AWAITING_APPROVAL" in result_text:
+        system_prompt = f"[SYSTEM NOTIFICATION] Jules session {jules_session_name} is AWAITING_APPROVAL. Please use get_session_plan, retrieve the plan, and ask the user for approval immediately."
+    elif "State: SUCCEEDED" in result_text or "Pull Request created" in result_text:
+        system_prompt = f"[SYSTEM NOTIFICATION] Jules session {jules_session_name} SUCCEEDED. Please check if a PR was generated, merge it using your GitHub tools, and notify the user."
+    elif "State: FAILED" in result_text or "State: CANCELLED" in result_text:
+        system_prompt = f"[SYSTEM NOTIFICATION] Jules session {jules_session_name} FAILED or was CANCELLED. Please use list_session_activities to determine why and notify the user."
+
+    if system_prompt:
+        logger.info(f"Jules event detected! Waking agent with prompt: {system_prompt}")
+        await run_agent_and_reply(user_id, session_id, system_prompt)
+

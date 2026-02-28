@@ -58,9 +58,32 @@ gcloud run deploy github-manager-agent \
   --allow-unauthenticated
 ```
 
-## Usage
-1. Start the bot on Telegram.
-2. Send a command like: "Create a new repo 'test-repo' and add a hello world python script."
-3. Wait for the plan notification.
-4. Click **Approve Plan**.
-5. Once Jules finishes, the agent will merge the PR and notify you.
+## Usage & Hooking Everything Up
+
+Cloud Run is stateless, so we need to bridge Telegram and our background poller to the live URL.
+
+### 1. Set up Telegram Webhook
+Register your deployed Cloud Run URL with Telegram so it pushes messages to the agent:
+```bash
+# Replace with your actual bot token and Cloud Run URL
+curl -X POST "https://api.telegram.org/bot<YOUR_TELEGRAM_BOT_TOKEN>/setWebhook" \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://<YOUR_CLOUD_RUN_URL>/telegram/webhook"}'
+```
+
+### 2. Set up Cloud Scheduler (Background Poller)
+Create a cron job that pings the agent every 1 minute to check on active Jules tasks:
+```bash
+gcloud scheduler jobs create http poll-jules-sessions \
+  --schedule="* * * * *" \
+  --uri="https://<YOUR_CLOUD_RUN_URL>/scheduler/poll-jules" \
+  --http-method=GET \
+  --location=us-central1
+```
+
+### 3. Talk to the Agent
+1. Open your bot on Telegram.
+2. Send a command like: "Create a new repo `test-repo` and add a hello world python script."
+3. The agent will reply instantly that it has started Jules and goes to sleep.
+4. When Cloud Scheduler detects the plan is ready, your phone will buzz with the plan.
+5. Reply "I approve the plan". Once Jules finishes, the agent merges the PR and notifies you!

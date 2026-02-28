@@ -10,4 +10,4 @@ COPY . .
 # Ensure the src directory is in PYTHONPATH
 ENV PYTHONPATH=/app
 
-CMD ["./start.sh"]
+CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
