@@ -38,6 +38,14 @@ runner = Runner(
 
 async def run_agent_and_reply(user_id: str, session_id: str, message: str):
     """Runs the agent with the given message and sends the response back to Telegram."""
+    try:
+        session = await session_service.get_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
+        if not session:
+            logger.info(f"Creating new session {session_id} for user {user_id}")
+            await session_service.create_session(app_name=APP_NAME, user_id=user_id, session_id=session_id)
+    except Exception as e:
+        logger.error(f"Failed to ensure session exists: {e}")
+
     content = types.Content(role="user", parts=[types.Part(text=message)])
     
     response_text = ""
