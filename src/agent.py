@@ -15,6 +15,7 @@ if GITHUB_TOKEN and GITHUB_MCP_URL:
         McpToolset(
             connection_params=StreamableHTTPServerParams(
                 url=GITHUB_MCP_URL,
+                timeout=30.0,
                 headers={
                     "Authorization": f"Bearer {GITHUB_TOKEN}",
                     "X-MCP-Toolsets": "all",
@@ -29,6 +30,7 @@ if JULES_MCP_URL:
         McpToolset(
             connection_params=StreamableHTTPServerParams(
                 url=JULES_MCP_URL,
+                timeout=30.0,
             ),
         )
     )
