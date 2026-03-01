@@ -1,5 +1,7 @@
 # Personal GitHub Manager Agent
 
+![Architecture Diagram](./github-manager-architechture.svg)
+
 Autonomous Personal GitHub Manager Agent built with Google ADK, GitHub MCP, and Jules MCP.
 
 For Making the remote Jules MCP Server hosted on cloud run, please refer : https://github.com/akshatbindal/jules-mcp-server
