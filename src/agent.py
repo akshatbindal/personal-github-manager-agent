@@ -2,7 +2,7 @@ import os
 import logging
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool import McpToolset
-from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams
+from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPServerParams, SseServerParams, StdioConnectionParams
 from .tools import track_jules_session
 from .config import GITHUB_TOKEN, GITHUB_MCP_URL, JULES_MCP_URL
 
@@ -28,7 +28,7 @@ if GITHUB_TOKEN and GITHUB_MCP_URL:
 if JULES_MCP_URL:
     tools.append(
         McpToolset(
-            connection_params=StreamableHTTPServerParams(
+            connection_params=SseServerParams(
                 url=JULES_MCP_URL,
                 timeout=30.0,
             ),
