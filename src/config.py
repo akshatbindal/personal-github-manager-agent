@@ -41,6 +41,11 @@ def get_secret(secret_id, default=None):
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN")
 GITHUB_MCP_URL = os.getenv("GITHUB_MCP_URL", "https://api.githubcopilot.com/mcp/")
 
+# Gemini Configuration
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
+
 # Jules MCP Configuration
 JULES_MCP_URL = get_secret("JULES_MCP_URL")
 
